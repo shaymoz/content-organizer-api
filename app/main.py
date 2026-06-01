@@ -121,10 +121,14 @@ async def process_url(url_input: models.URLInput, db: Session = Depends(get_db))
     Accept a TikTok/Instagram URL, fetch video metadata using yt-dlp,
     extract thumbnail, classify content, and save to database.
     """
-    # Extract video information using yt-dlp
+    # Extract video information using yt-dlp with timeout and headers to avoid blocking
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
+        'socket_timeout': 15,  # 15 seconds timeout
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1'
+        }
     }
 
     try:
