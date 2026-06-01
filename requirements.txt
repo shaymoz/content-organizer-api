@@ -6,3 +6,4 @@ sqlalchemy
 openai
 python-dotenv
 gunicorn
+tiktok-scraper

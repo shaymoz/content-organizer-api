@@ -5,8 +5,20 @@ import yt_dlp
 import json
 from typing import List, Optional
 import os
+import re
 from dotenv import load_dotenv
 from openai import OpenAI
+
+# Import tiktok-scraper
+try:
+    from tiktok_scraper.scraper import scrape_video
+    from tiktok_scraper.scraper import ScrapeUtils
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    TIKTOK_SCRAPER_AVAILABLE = True
+except ImportError:
+    TIKTOK_SCRAPER_AVAILABLE = False
+    # No warning print to avoid cluttering logs in production
 
 # Load environment variables from .env file
 load_dotenv()
@@ -121,23 +133,95 @@ async def process_url(url_input: models.URLInput, db: Session = Depends(get_db))
     Accept a TikTok/Instagram URL, fetch video metadata using yt-dlp,
     extract thumbnail, classify content, and save to database.
     """
-    # Extract video information using yt-dlp with timeout and headers to avoid blocking
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 15,  # 15 seconds timeout
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1'
+    # Extract video information using tiktok-scraper for TikTok URLs, otherwise yt-dlp with timeout and headers
+    def extract_video_info(url):
+        # Check if it's a TikTok URL and tiktok-scraper is available
+        if 'tiktok.com' in url and TIKTOK_SCRAPER_AVAILABLE:
+            try:
+                # Setup Chrome options for headless browsing
+                chrome_options = Options()
+                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--window-size=1920,1080")
+
+                # Initialize the driver
+                driver = webdriver.Chrome(options=chrome_options)
+
+                try:
+                    # Scrape the TikTok video
+                    scraped_data = scrape_video(driver, folder='./temp_tiktok')
+
+                    # Close the driver
+                    driver.quit()
+
+                    # If scrape_video returns a list, take the first item
+                    if isinstance(scraped_data, list) and len(scraped_data) > 0:
+                        scraped_data = scraped_data[0]
+                    elif isinstance(scraped_data, list):
+                        # Empty list, return empty data
+                        return {
+                            'title': '',
+                            'description': '',
+                            'thumbnail': ''
+                        }
+
+                    # Map scraped data to the expected format (title, description, thumbnail)
+                    # Based on tiktok-scraper output structure
+                    title = scraped_data.get('title', '') or scraped_data.get('desc', '')
+                    description = scraped_data.get('desc', '')
+                    # Thumbnail is typically in the 'cover' field
+                    thumbnail = scraped_data.get('cover', '') or scraped_data.get('thumbnail', '')
+
+                    # Clean up temp files if they exist
+                    import os
+                    import shutil
+                    if os.path.exists('./temp_tiktok'):
+                        shutil.rmtree('./temp_tiktok')
+
+                    return {
+                        'title': title,
+                        'description': description,
+                        'thumbnail': thumbnail
+                    }
+                except Exception as e:
+                    # Make sure to close driver on error
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    raise e  # Re-raise to be caught by outer exception handler
+
+            except Exception as e:
+                # If tiktok-scraper fails, fall back to yt-dlp
+                print(f"tiktok-scraper failed: {e}. Falling back to yt-dlp.")
+                pass  # Fall through to yt-dlp below
+
+        # For non-TikTok URLs or when tiktok-scraper fails, use yt-dlp
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 15,  # 15 seconds timeout
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1'
+            }
         }
-    }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url_input.url, download=False)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error extracting video info: {str(e)}")
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            # yt-dlp returns a dict with at least title, description, thumbnail
+            return {
+                'title': info.get('title', ''),
+                'description': info.get('description', ''),
+                'thumbnail': info.get('thumbnail', '')
+            }
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error extracting video info: {str(e)}")
 
-    # Extract basic metadata
+    # Use the extract_video_info function
+    info = extract_video_info(url_input.url)
     title = info.get('title', '')
     description = info.get('description', '')
     thumbnail_url = info.get('thumbnail', '')
